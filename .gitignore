@@ -1,0 +1,17 @@
+# binaries
+server
+*.exe
+
+# build output embedded by Go
+cmd/server/dist/
+
+# env files
+.env
+.env.*
+
+# Go test cache
+*.test
+*.out
+
+# macOS
+.DS_Store
