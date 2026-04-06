@@ -1,6 +1,10 @@
 # Backend
 
-Go API server. Serves the REST API and the embedded React frontend from a single binary.
+Go API server. Serves the REST API and the React frontend.
+
+## Architecture
+
+![System Design](design.svg)
 
 ## Run locally
 
@@ -13,8 +17,6 @@ createdb foodordering
 Then start the server:
 
 ```bash
-cd backend
-
 export PORT=8080
 export DATABASE_URL="postgres://localhost:5432/foodordering?sslmode=disable"
 export JWT_SECRET="any-secret"
@@ -28,39 +30,33 @@ Server starts on `http://localhost:8080`. Migrations and seed data run automatic
 ## Load promo codes into Redis (one-time)
 
 ```bash
-cd backend
-
 export REDIS_URL="localhost:6379"
 
 go run ./cmd/coupon-worker
 ```
 
-This downloads the 3 coupon gz files from S3 and loads them into Redis. Takes a couple of minutes. Once done, a `promo:ready` key is set in Redis.
+Downloads the 3 coupon gz files from S3 and loads them into Redis. Takes a couple of minutes. Once done, a `promo:ready` key is set in Redis.
 
 ## Build Docker image
 
-Run this from the **root of the repo** (not inside `backend/`), as the root Dockerfile builds both frontend and backend together:
+The backend image needs the frontend image built first (it copies the static files from it):
 
 ```bash
-cd ..   # go to root
+docker build -t food-ordering-frontend:v1.0.0 ../food-ordering-frontend
 
-docker build -t food-ordering:v1.0.0 .
+docker build \
+  --build-arg FRONTEND_IMAGE=food-ordering-frontend:v1.0.0 \
+  -t food-ordering:v1.0.0 .
 ```
 
-## Deploy code change to a running kind cluster
-
-If you change Go code and need to push it to the local kind cluster:
+## Deploy a code change to a running kind cluster
 
 ```bash
-# 1. rebuild the image (from repo root)
-docker build -t food-ordering:v1.0.0 .
+docker build -t food-ordering-frontend:v1.0.0 ../food-ordering-frontend
+docker build --build-arg FRONTEND_IMAGE=food-ordering-frontend:v1.0.0 -t food-ordering:v1.0.0 .
 
-# 2. load it into kind
 kind load docker-image food-ordering:v1.0.0 --name food-ordering
 
-# 3. restart the deployment to pick up the new image
 kubectl rollout restart deployment/food-ordering -n food-ordering
-
-# 4. wait for it to finish
 kubectl rollout status deployment/food-ordering -n food-ordering
 ```
