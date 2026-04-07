@@ -4,7 +4,9 @@ Go API server. Serves the REST API and the React frontend.
 
 ## Architecture
 
-![System Design](design.svg)
+![System Design](updated_design.svg)
+
+Link: https://excalidraw.com/#json=uTPccQF36TKR8VRrq-j3k,p_YG2DBs7cl3glE6qnwUjQ
 
 ## Run locally
 
