@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -36,8 +37,11 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+	defer cancel()
+
 	var user models.User
-	err = h.db.QueryRow(
+	err = h.db.QueryRowContext(ctx,
 		`INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING id, email, name, created_at`,
 		req.Email, req.Name, string(hash),
 	).Scan(&user.ID, &user.Email, &user.Name, &user.CreatedAt)
@@ -68,9 +72,12 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
+	ctx, cancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+	defer cancel()
+
 	var user models.User
 	var passwordHash string
-	err := h.db.QueryRow(
+	err := h.db.QueryRowContext(ctx,
 		`SELECT id, email, name, password_hash, created_at FROM users WHERE email = $1`,
 		req.Email,
 	).Scan(&user.ID, &user.Email, &user.Name, &passwordHash, &user.CreatedAt)

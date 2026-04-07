@@ -13,15 +13,16 @@ import (
 	"github.com/gorilla/mux"
 )
 
+const dbQueryTimeout = 5 * time.Second
+
 func (h *Handlers) ListProducts(w http.ResponseWriter, r *http.Request) {
 	category := r.URL.Query().Get("category")
 	search := r.URL.Query().Get("search")
 
 	cacheKey := fmt.Sprintf("products:cat:%s:search:%s", category, search)
 
-	ctx := context.Background()
 	var products []models.Product
-	if err := h.cache.Get(ctx, cacheKey, &products); err == nil {
+	if err := h.cache.Get(r.Context(), cacheKey, &products); err == nil {
 		writeJSON(w, http.StatusOK, products)
 		return
 	}
@@ -42,7 +43,10 @@ func (h *Handlers) ListProducts(w http.ResponseWriter, r *http.Request) {
 	}
 	query += " ORDER BY category, name"
 
-	rows, err := h.db.Query(query, args...)
+	ctx, cancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+	defer cancel()
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to fetch products")
 		return
@@ -61,7 +65,7 @@ func (h *Handlers) ListProducts(w http.ResponseWriter, r *http.Request) {
 		products = append(products, p)
 	}
 
-	h.cache.Set(ctx, cacheKey, products, 5*time.Minute)
+	h.cache.Set(r.Context(), cacheKey, products, 5*time.Minute)
 
 	writeJSON(w, http.StatusOK, products)
 }
@@ -77,16 +81,18 @@ func (h *Handlers) GetProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cacheKey := fmt.Sprintf("product:%d", productID)
-	ctx := context.Background()
 
 	var product models.Product
-	if err := h.cache.Get(ctx, cacheKey, &product); err == nil {
+	if err := h.cache.Get(r.Context(), cacheKey, &product); err == nil {
 		writeJSON(w, http.StatusOK, product)
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), dbQueryTimeout)
+	defer cancel()
+
 	var id int
-	err = h.db.QueryRow(
+	err = h.db.QueryRowContext(ctx,
 		`SELECT id, name, price, category, COALESCE(image_url, '') FROM products WHERE id = $1`,
 		productID,
 	).Scan(&id, &product.Name, &product.Price, &product.Category, &product.ImageURL)
@@ -96,7 +102,7 @@ func (h *Handlers) GetProduct(w http.ResponseWriter, r *http.Request) {
 	}
 	product.ID = strconv.Itoa(id)
 
-	h.cache.Set(ctx, cacheKey, product, 10*time.Minute)
+	h.cache.Set(r.Context(), cacheKey, product, 10*time.Minute)
 
 	writeJSON(w, http.StatusOK, product)
 }

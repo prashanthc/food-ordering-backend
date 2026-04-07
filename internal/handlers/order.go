@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"food-ordering/internal/middleware"
 	"food-ordering/internal/models"
@@ -20,11 +22,14 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 
 	if idempotencyKey != "" {
 		var existing models.Order
-		err := h.db.QueryRow(
+		err := h.db.QueryRowContext(ctx,
 			`SELECT id, coupon_code, total_amount, discount, final_amount, status, created_at
 			 FROM orders WHERE user_id = $1 AND idempotency_key = $2`,
 			userID, idempotencyKey,
@@ -59,12 +64,12 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.CouponCode != "" {
-		if !h.promoValidator.IsValid(r.Context(), req.CouponCode) {
+		if !h.promoValidator.IsValid(ctx, req.CouponCode) {
 			writeError(w, http.StatusUnprocessableEntity, "invalid coupon code")
 			return
 		}
 		var priorUses int
-		h.db.QueryRow(
+		h.db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM orders WHERE user_id = $1 AND coupon_code = $2`,
 			userID, req.CouponCode,
 		).Scan(&priorUses)
@@ -74,7 +79,7 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tx, err := h.db.Begin()
+	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
 		return
@@ -93,7 +98,7 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 
 		var p models.Product
 		var id int
-		err = tx.QueryRow(
+		err = tx.QueryRowContext(ctx,
 			`SELECT id, name, price, category, COALESCE(image_url, '') FROM products WHERE id = $1`,
 			productID,
 		).Scan(&id, &p.Name, &p.Price, &p.Category, &p.ImageURL)
@@ -125,7 +130,7 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var order models.Order
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(ctx,
 		`INSERT INTO orders (user_id, idempotency_key, coupon_code, total_amount, discount, final_amount)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, status, created_at`,
@@ -136,7 +141,7 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	itemStmt, err := tx.Prepare(
+	itemStmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO order_items (order_id, product_id, quantity, price) VALUES ($1, $2, $3, $4)`,
 	)
 	if err != nil {
@@ -147,7 +152,7 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 
 	for i, item := range req.Items {
 		productID, _ := strconv.Atoi(item.ProductID)
-		if _, err := itemStmt.Exec(order.ID, productID, item.Quantity, products[i].Price); err != nil {
+		if _, err := itemStmt.ExecContext(ctx, order.ID, productID, item.Quantity, products[i].Price); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save order items")
 			return
 		}

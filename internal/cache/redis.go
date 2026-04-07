@@ -6,9 +6,12 @@ import (
 	"time"
 
 	"food-ordering/internal/config"
+	"food-ordering/internal/resilience"
 
 	"github.com/redis/go-redis/v9"
 )
+
+const redisTimeout = 2 * time.Second
 
 type Client struct {
 	rdb *redis.Client
@@ -30,19 +33,33 @@ func (c *Client) Set(ctx context.Context, key string, value interface{}, ttl tim
 	if err != nil {
 		return err
 	}
-	return c.rdb.Set(ctx, key, data, ttl).Err()
+	_, cbErr := resilience.RedisCB.Execute(func() (interface{}, error) {
+		ctx, cancel := context.WithTimeout(ctx, redisTimeout)
+		defer cancel()
+		return nil, c.rdb.Set(ctx, key, data, ttl).Err()
+	})
+	return cbErr
 }
 
 func (c *Client) Get(ctx context.Context, key string, dest interface{}) error {
-	data, err := c.rdb.Get(ctx, key).Bytes()
-	if err != nil {
-		return err
+	result, cbErr := resilience.RedisCB.Execute(func() (interface{}, error) {
+		ctx, cancel := context.WithTimeout(ctx, redisTimeout)
+		defer cancel()
+		return c.rdb.Get(ctx, key).Bytes()
+	})
+	if cbErr != nil {
+		return cbErr
 	}
-	return json.Unmarshal(data, dest)
+	return json.Unmarshal(result.([]byte), dest)
 }
 
 func (c *Client) Del(ctx context.Context, keys ...string) error {
-	return c.rdb.Del(ctx, keys...).Err()
+	_, cbErr := resilience.RedisCB.Execute(func() (interface{}, error) {
+		ctx, cancel := context.WithTimeout(ctx, redisTimeout)
+		defer cancel()
+		return nil, c.rdb.Del(ctx, keys...).Err()
+	})
+	return cbErr
 }
 
 func (c *Client) Ping(ctx context.Context) error {
