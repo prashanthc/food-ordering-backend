@@ -10,6 +10,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/joho/godotenv"
@@ -36,6 +38,31 @@ func getMaxTokens() int {
 	return n
 }
 
+func getWorkerCount() int {
+	v := os.Getenv("WORKER_COUNT")
+	if v == "" {
+		return len(couponFileURLs)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return len(couponFileURLs)
+	}
+	return n
+}
+
+type fileJob struct {
+	index  int
+	url    string
+	setKey string
+}
+
+type fileResult struct {
+	index  int
+	count  int
+	err    error
+	millis int64
+}
+
 func main() {
 	godotenv.Load()
 
@@ -55,17 +82,62 @@ func main() {
 	}
 
 	maxTokens := getMaxTokens()
+	workers := getWorkerCount()
+
 	if maxTokens > 0 {
-		log.Printf("capping at %d tokens per file", maxTokens)
+		log.Printf("config: max_tokens_per_file=%d, workers=%d", maxTokens, workers)
+	} else {
+		log.Printf("config: no token cap (loading all), workers=%d", workers)
+	}
+
+	jobs := make(chan fileJob, len(couponFileURLs))
+	results := make(chan fileResult, len(couponFileURLs))
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for job := range jobs {
+				log.Printf("[worker %d] processing file %d → %s", workerID, job.index+1, job.setKey)
+				start := time.Now()
+				count, err := loadFile(ctx, rdb, job.setKey, job.url, maxTokens)
+				results <- fileResult{
+					index:  job.index,
+					count:  count,
+					err:    err,
+					millis: time.Since(start).Milliseconds(),
+				}
+			}
+		}(w)
 	}
 
 	for idx, url := range couponFileURLs {
-		setKey := fmt.Sprintf("promo:set:%d", idx+1)
-		log.Printf("[file %d] starting %s → %s", idx+1, url, setKey)
-		if err := loadFile(ctx, rdb, setKey, url, maxTokens); err != nil {
-			log.Fatalf("[file %d] failed: %v", idx+1, err)
+		jobs <- fileJob{
+			index:  idx,
+			url:    url,
+			setKey: fmt.Sprintf("promo:set:%d", idx+1),
 		}
-		log.Printf("[file %d] done", idx+1)
+	}
+	close(jobs)
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var failed bool
+	for res := range results {
+		if res.err != nil {
+			log.Printf("[file %d] FAILED after %dms: %v", res.index+1, res.millis, res.err)
+			failed = true
+		} else {
+			log.Printf("[file %d] done — %d tokens in %dms", res.index+1, res.count, res.millis)
+		}
+	}
+
+	if failed {
+		log.Fatal("one or more files failed to load")
 	}
 
 	if err := rdb.Set(ctx, "promo:ready", "1", 0).Err(); err != nil {
@@ -74,16 +146,16 @@ func main() {
 	log.Println("promo:ready = 1 — all files loaded")
 }
 
-func loadFile(ctx context.Context, rdb *redis.Client, setKey, url string, maxTokens int) error {
+func loadFile(ctx context.Context, rdb *redis.Client, setKey, url string, maxTokens int) (int, error) {
 	resp, err := http.Get(url)
 	if err != nil {
-		return fmt.Errorf("download: %w", err)
+		return 0, fmt.Errorf("download: %w", err)
 	}
 	defer resp.Body.Close()
 
 	gz, err := gzip.NewReader(resp.Body)
 	if err != nil {
-		return fmt.Errorf("gzip: %w", err)
+		return 0, fmt.Errorf("gzip: %w", err)
 	}
 	defer gz.Close()
 
@@ -125,7 +197,7 @@ func loadFile(ctx context.Context, rdb *redis.Client, setKey, url string, maxTok
 			batch = append(batch, word)
 			if len(batch) >= batchSize {
 				if err := flush(); err != nil {
-					return err
+					return total, err
 				}
 			}
 		}
@@ -136,9 +208,8 @@ func loadFile(ctx context.Context, rdb *redis.Client, setKey, url string, maxTok
 		batch = append(batch, word)
 	}
 	if err := flush(); err != nil {
-		return err
+		return total, err
 	}
 
-	log.Printf("[%s] %d tokens loaded (final)", setKey, total)
-	return nil
+	return total, nil
 }
