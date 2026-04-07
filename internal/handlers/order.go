@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -137,7 +138,8 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 		userID, idempArg, couponArg, totalAmount, discount, finalAmount,
 	).Scan(&order.ID, &order.Status, &order.CreatedAt)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create order")
+		slog.Error("failed to create order", "error", err, "user_id", userID, "idempotency_key", idempotencyKey, "coupon_code", req.CouponCode, "total_amount", totalAmount, "discount", discount, "final_amount", finalAmount)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
