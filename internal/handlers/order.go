@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -17,6 +18,22 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	if !ok || userID == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
+	}
+
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+
+	if idempotencyKey != "" {
+		var existing models.Order
+		err := h.db.QueryRow(
+			`SELECT id, coupon_code, total_amount, discount, final_amount, status, created_at
+			 FROM orders WHERE user_id = $1 AND idempotency_key = $2`,
+			userID, idempotencyKey,
+		).Scan(&existing.ID, &sql.NullString{}, &existing.TotalAmount,
+			&existing.Discount, &existing.FinalAmount, &existing.Status, &existing.CreatedAt)
+		if err == nil {
+			writeJSON(w, http.StatusOK, existing)
+			return
+		}
 	}
 
 	var req models.OrderRequest
@@ -102,12 +119,17 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 		couponArg = req.CouponCode
 	}
 
+	idempArg := interface{}(nil)
+	if idempotencyKey != "" {
+		idempArg = idempotencyKey
+	}
+
 	var order models.Order
 	err = tx.QueryRow(
-		`INSERT INTO orders (user_id, coupon_code, total_amount, discount, final_amount)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO orders (user_id, idempotency_key, coupon_code, total_amount, discount, final_amount)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, status, created_at`,
-		userID, couponArg, totalAmount, discount, finalAmount,
+		userID, idempArg, couponArg, totalAmount, discount, finalAmount,
 	).Scan(&order.ID, &order.Status, &order.CreatedAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create order")

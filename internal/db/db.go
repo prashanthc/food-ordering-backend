@@ -57,12 +57,14 @@ func Migrate(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS orders (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+			idempotency_key VARCHAR(64),
 			coupon_code VARCHAR(20),
 			total_amount DECIMAL(10,2) NOT NULL,
 			discount DECIMAL(10,2) DEFAULT 0,
 			final_amount DECIMAL(10,2) NOT NULL,
 			status VARCHAR(50) DEFAULT 'confirmed',
-			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			CONSTRAINT uq_idempotency UNIQUE (user_id, idempotency_key)
 		)`,
 		`CREATE TABLE IF NOT EXISTS order_items (
 			id SERIAL PRIMARY KEY,
